@@ -5,7 +5,6 @@ import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -43,19 +42,17 @@ import azkaban.utils.Props;
 public class XmlValidatorManager implements ValidatorManager {
   private static final Logger logger = Logger.getLogger(XmlValidatorManager.class);
 
-  public static final String DEFAULT_VALIDATOR_DIR = "validators";
-  public static final String VALIDATOR_PLUGIN_DIR = "project.validators.dir";
-  public static final String XML_FILE_PARAM = "project.validators.xml.file";
   public static final String AZKABAN_VALIDATOR_TAG = "azkaban-validators";
   public static final String VALIDATOR_TAG = "validator";
   public static final String CLASSNAME_ATTR = "classname";
   public static final String ITEM_TAG = "property";
   public static final String DEFAULT_VALIDATOR_KEY = "Directory Flow";
 
+  private static Map<String, Long> resourceTimestamps = new HashMap<String, Long>();
+  private static ValidatorClassLoader validatorLoader;
+
   private Map<String, ProjectValidator> validators;
-  private Map<String, Long> resourceTimestamps;
   private String validatorDirPath;
-  private ClassLoader validatorLoader;
 
   /**
    * Load the validator plugins from the validator directory (default being validators/) into
@@ -65,30 +62,17 @@ public class XmlValidatorManager implements ValidatorManager {
    * @param props
    */
   public XmlValidatorManager(Props props) {
-    validatorDirPath = props.getString(VALIDATOR_PLUGIN_DIR, DEFAULT_VALIDATOR_DIR);
+    validatorDirPath = props.getString(ValidatorConfigs.VALIDATOR_PLUGIN_DIR, ValidatorConfigs.DEFAULT_VALIDATOR_DIR);
     File validatorDir = new File(validatorDirPath);
     if (!validatorDir.canRead() || !validatorDir.isDirectory()) {
-      throw new ValidatorManagerException("Validator directory " + validatorDirPath
+      logger.warn("Validator directory " + validatorDirPath
           + " does not exist or is not a directory.");
     }
 
-    resourceTimestamps = new HashMap<String, Long>();
-    List<URL> resources = new ArrayList<URL>();
-    try {
-      logger.info("Adding validator resources.");
-      for (File f : validatorDir.listFiles()) {
-        if (f.getName().endsWith(".jar")) {
-          resourceTimestamps.put(f.getName(), f.lastModified());
-          resources.add(f.toURI().toURL());
-          logger.debug("adding to classpath " + f.toURI().toURL());
-        }
-      }
-    } catch (MalformedURLException e) {
-      throw new ValidatorManagerException(e);
-    }
-    validatorLoader = new URLClassLoader(resources.toArray(new URL[resources.size()]));
+    // Check for updated validator JAR files
+    checkResources();
 
-    // Test loading the validators specified in the xml file.
+    // Load the validators specified in the xml file.
     try {
       loadValidators(props, logger);
     } catch (Exception e) {
@@ -102,14 +86,16 @@ public class XmlValidatorManager implements ValidatorManager {
     List<URL> resources = new ArrayList<URL>();
     boolean reloadResources = false;
     try {
-      for (File f : validatorDir.listFiles()) {
-        if (f.getName().endsWith(".jar")) {
-          resources.add(f.toURI().toURL());
-          if (resourceTimestamps.get(f.getName()) == null
-              || resourceTimestamps.get(f.getName()) != f.lastModified()) {
-            reloadResources = true;
-            logger.info("Resource " + f.getName() + " is updated. Reload the classloader.");
-            resourceTimestamps.put(f.getName(), f.lastModified());
+      if (validatorDir.canRead() && validatorDir.isDirectory()) {
+        for (File f : validatorDir.listFiles()) {
+          if (f.getName().endsWith(".jar")) {
+            resources.add(f.toURI().toURL());
+            if (resourceTimestamps.get(f.getName()) == null
+                || resourceTimestamps.get(f.getName()) != f.lastModified()) {
+              reloadResources = true;
+              logger.info("Resource " + f.getName() + " is updated. Reload the classloader.");
+              resourceTimestamps.put(f.getName(), f.lastModified());
+            }
           }
         }
       }
@@ -118,7 +104,18 @@ public class XmlValidatorManager implements ValidatorManager {
     }
 
     if (reloadResources) {
-      validatorLoader = new URLClassLoader(resources.toArray(new URL[resources.size()]));
+      if (validatorLoader != null) {
+        try {
+        // Since we cannot use Java 7 feature inside Azkaban (....), we need a customized class loader
+        // that does the close for us.
+          validatorLoader.close();
+        } catch (ValidatorManagerException e) {
+          logger.error("Cannot reload validator classloader because failure "
+              + "to close the validator classloader.", e);
+          // We do not throw the ValidatorManagerException because we do not want to crash Azkaban at runtime.
+        }
+      }
+      validatorLoader = new ValidatorClassLoader(resources.toArray(new URL[resources.size()]));
     }
   }
 
@@ -138,19 +135,16 @@ public class XmlValidatorManager implements ValidatorManager {
     DirectoryFlowLoader flowLoader = new DirectoryFlowLoader(log);
     validators.put(flowLoader.getValidatorName(), flowLoader);
 
-    if (!props.containsKey(XML_FILE_PARAM)) {
-      logger.warn("Azkaban properties file does not contain the key " + XML_FILE_PARAM);
+    if (!props.containsKey(ValidatorConfigs.XML_FILE_PARAM)) {
+      logger.warn("Azkaban properties file does not contain the key " + ValidatorConfigs.XML_FILE_PARAM);
       return;
     }
-    String xmlPath = props.get(XML_FILE_PARAM);
+    String xmlPath = props.get(ValidatorConfigs.XML_FILE_PARAM);
     File file = new File(xmlPath);
     if (!file.exists()) {
       logger.error("Azkaban validator configuration file " + xmlPath + " does not exist.");
       return;
     }
-
-    // Check for updated validator JAR files
-    checkResources();
 
     // Creating the document builder to parse xml.
     DocumentBuilderFactory docBuilderFactory =

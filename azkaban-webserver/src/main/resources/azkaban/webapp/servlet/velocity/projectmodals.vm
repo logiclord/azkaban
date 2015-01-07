@@ -33,6 +33,25 @@
                       <input type="file" class="form-control" id="file" name="file">
                     </div>
                   </div>
+                  #if ($validatorFixPrompt.booleanValue())
+                    <div class="form-group">
+                      <label for="fix" class="col-sm-3 control-label">
+                        $validatorFixLabel.toString()
+                        <a href=$validatorFixLink.toString() target="_blank">
+                          <span class="ui-icon ui-icon-info" style="display:inline-block;"></span>
+                        </a>
+                      </label>
+                      <div class="col-sm-3">
+                        <div class="checkbox">
+                          ## Add a hidden input so that when user uncheck the checkbox, "fix" field will
+                          ## still have value set to "off". This enables us to distinguish whether the
+                          ## user uncheck the checkbox or we turn off the fix prompt UI.
+                          <input type="hidden" name="fix" value="off">
+                          <input type="checkbox" id="fix" name="fix" value="on" checked="checked">
+                        </div>
+                      </div>
+                    </div>
+                  #end
                 </fieldset>
               </div>
               <div class="modal-footer">

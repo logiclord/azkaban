@@ -98,6 +98,11 @@ public class CommonJobProperties {
   public static final String NESTED_FLOW_PATH = "azkaban.flow.nested.path";
 
   /**
+   * The executing job id
+   */
+  public static final String JOB_ID = "azkaban.job.id";
+
+  /**
    * The execution id. This should be unique per flow, but may not be due to
    * restarts.
    */
@@ -112,6 +117,16 @@ public class CommonJobProperties {
    * The project name.
    */
   public static final String PROJECT_NAME = "azkaban.flow.projectname";
+
+  /**
+   * The project last modified by user.
+   */
+  public static final String PROJECT_LAST_CHANGED_BY = "azkaban.flow.projectlastchangedby";
+
+  /**
+   * The project last modified on date.
+   */
+  public static final String PROJECT_LAST_CHANGED_DATE = "azkaban.flow.projectlastchangeddate";
 
   /**
    * The version of the project the flow is running. This may change if a forced
