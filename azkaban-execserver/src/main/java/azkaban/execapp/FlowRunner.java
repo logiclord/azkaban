@@ -19,7 +19,9 @@ package azkaban.execapp;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -54,6 +56,7 @@ import azkaban.executor.ExecutionOptions.FailureAction;
 import azkaban.executor.ExecutorLoader;
 import azkaban.executor.ExecutorManagerException;
 import azkaban.executor.Status;
+import azkaban.flow.CommonJobProperties;
 import azkaban.flow.FlowProps;
 import azkaban.jobExecutor.ProcessJob;
 import azkaban.jobtype.JobTypeManager;
@@ -480,7 +483,7 @@ public class FlowRunner extends EventHandler implements Runnable {
     // before
     // Instant kill or skip if necessary.
     boolean jobsRun = false;
-    for (ExecutableNode node : nodesToCheck) {
+    for (ExecutableNode node : orderNodesByPriority(nodesToCheck)) {
       if (Status.isStatusFinished(node.getStatus())
           || Status.isStatusRunning(node.getStatus())) {
         // Really shouldn't get in here.
@@ -496,6 +499,56 @@ public class FlowRunner extends EventHandler implements Runnable {
     }
 
     return false;
+  }
+
+  /**
+   * uses orderNodesByPriorityHelper to order nodes
+   * @param nodes
+   * @return
+   * @throws IOException
+   */
+  private Collection<ExecutableNode> orderNodesByPriority(Collection<ExecutableNode> nodesToCheck)
+      throws IOException {
+    Collection<ExecutableNode> orderedNodes = nodesToCheck;
+    if (flow.getInputProps() != null &&
+        flow.getInputProps().getBoolean(CommonJobProperties.JOB_PRIORITY_ENABLE, false)) {
+      orderedNodes = orderNodesByPriorityHelper(orderedNodes);
+    }
+    return orderedNodes;
+  }
+
+  /**
+   * Sorts all nodes by CommonJobProperties.PRIORITY
+   * @param nodes
+   * @return
+   * @throws IOException
+   */
+  protected List<ExecutableNode> orderNodesByPriorityHelper(Collection<ExecutableNode> nodes)
+      throws IOException {
+    List<ExecutableNode> prioritizedNodes = new ArrayList<ExecutableNode>();
+    if (nodes != null && nodes.size() > 0) {
+      // select ready nodes
+      for (ExecutableNode node : nodes) {
+        if (getImpliedStatus(node) == Status.READY) {
+          prepareJobProperties(node);
+          prioritizedNodes.add(node);
+        }
+      }
+
+      // sort nodes in descending order by CommonJobProperties.PRIORITY
+      Collections.sort(prioritizedNodes, new Comparator<ExecutableNode>() {
+        public int compare(ExecutableNode firstNode, ExecutableNode secondNode) {
+          int firstJobPriority = firstNode.getInputProps().getInt(CommonJobProperties.JOB_PRIORITY, 0);
+          int secondJobPriority = secondNode.getInputProps().getInt(CommonJobProperties.JOB_PRIORITY, 0);
+          // order by node id if priorities are same
+          if (secondJobPriority == firstJobPriority) {
+            return firstNode.getNestedId().compareTo(secondNode.getNestedId());
+          }
+          return (secondJobPriority - firstJobPriority);
+        }
+      });
+    }
+    return prioritizedNodes;
   }
 
   private boolean runReadyJob(ExecutableNode node) throws IOException {
@@ -526,8 +579,12 @@ public class FlowRunner extends EventHandler implements Runnable {
         flow.setStartTime(System.currentTimeMillis());
         prepareJobProperties(flow);
 
+        Set<ExecutableNode> startNodes = new HashSet<ExecutableNode>();
         for (String startNodeId : ((ExecutableFlowBase) node).getStartNodes()) {
-          ExecutableNode startNode = flow.getExecutableNode(startNodeId);
+          startNodes.add(flow.getExecutableNode(startNodeId));
+        }
+
+        for (ExecutableNode startNode : orderNodesByPriority(startNodes)) {
           runReadyJob(startNode);
         }
       } else {
@@ -840,7 +897,7 @@ public class FlowRunner extends EventHandler implements Runnable {
 
   /**
    * Configure Azkaban metrics tracking for a new jobRunner instance
-   * 
+   *
    * @param jobRunner
    */
   private void configureJobLevelMetrics(JobRunner jobRunner) {
