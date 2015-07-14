@@ -38,6 +38,11 @@ public class CommonJobProperties {
   public static final String DEPENDENCIES = "dependencies";
 
   /**
+   * Integer value to prioritize ready jobs. Higher value means higher priority
+   */
+  public static final String JOB_PRIORITY = "job.priority";
+
+  /**
    * The number of retries when this job has failed.
    */
   public static final String RETRIES = "retries";
@@ -91,6 +96,11 @@ public class CommonJobProperties {
    * The executing flow id
    */
   public static final String FLOW_ID = "azkaban.flow.flowid";
+
+  /**
+   * Boolean to enable disable use of job priority property
+   */
+  public static final String JOB_PRIORITY_ENABLE = "job.priority.enable";
 
   /**
    * The nested flow id path
