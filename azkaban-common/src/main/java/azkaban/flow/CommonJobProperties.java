@@ -33,6 +33,11 @@ public class CommonJobProperties {
   public static final String ROOT_NODE = "root.node";
 
   /**
+   * Comma delimited list of data dependencies
+   */
+  public static final String DATA_DEPENDENCIES = "dataDependencies";
+
+  /**
    * Comma delimited list of job names which are dependencies
    */
   public static final String DEPENDENCIES = "dependencies";
@@ -133,7 +138,7 @@ public class CommonJobProperties {
    * hotspot occurs.
    */
   public static final String PROJECT_VERSION = "azkaban.flow.projectversion";
-  
+
   /**
    * Find out who is the submit user, in addition to the user.to.proxy (they may be different)
    */

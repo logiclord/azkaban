@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import org.apache.log4j.Appender;
@@ -35,6 +36,8 @@ import azkaban.event.Event;
 import azkaban.event.Event.Type;
 import azkaban.event.EventHandler;
 import azkaban.execapp.event.BlockingStatus;
+import azkaban.execapp.event.DataSetStatus;
+import azkaban.execapp.event.DataWatcher;
 import azkaban.execapp.event.FlowWatcher;
 import azkaban.executor.ExecutableFlowBase;
 import azkaban.executor.ExecutableNode;
@@ -48,6 +51,7 @@ import azkaban.jobExecutor.Job;
 import azkaban.jobtype.JobTypeManager;
 import azkaban.jobtype.JobTypeManagerException;
 import azkaban.utils.Props;
+import azkaban.utils.PropsUtils;
 import azkaban.utils.StringUtils;
 
 public class JobRunner extends EventHandler implements Runnable {
@@ -80,8 +84,12 @@ public class JobRunner extends EventHandler implements Runnable {
 
   // Used by the job to watch and block against another flow
   private Integer pipelineLevel = null;
-  private FlowWatcher watcher = null;
+  private FlowWatcher flowWatcher = null;
+  private DataWatcher dataWatcher = null;
+
   private Set<String> pipelineJobs = new HashSet<String>();
+
+  private Set<String> dataDependencies = new HashSet<String>();
 
   private Set<String> proxyUsers = null;
 
@@ -91,6 +99,7 @@ public class JobRunner extends EventHandler implements Runnable {
   private long delayStartMs = 0;
   private boolean killed = false;
   private BlockingStatus currentBlockStatus = null;
+  private DataSetStatus currentDataSetStatus = null;
 
   public JobRunner(ExecutableNode node, File workingDir, ExecutorLoader loader,
       JobTypeManager jobtypeManager) {
@@ -102,6 +111,8 @@ public class JobRunner extends EventHandler implements Runnable {
     this.jobId = node.getId();
     this.loader = loader;
     this.jobtypeManager = jobtypeManager;
+    this.dataDependencies.addAll(props.getStringList(CommonJobProperties.DATA_DEPENDENCIES,
+              (List<String>) null));
   }
 
   public void setValidatedProxyUsers(Set<String> proxyUsers) {
@@ -120,7 +131,7 @@ public class JobRunner extends EventHandler implements Runnable {
   }
 
   public void setPipeline(FlowWatcher watcher, int pipelineLevel) {
-    this.watcher = watcher;
+    this.flowWatcher = watcher;
     this.pipelineLevel = pipelineLevel;
 
     if (this.pipelineLevel == 1) {
@@ -287,6 +298,46 @@ public class JobRunner extends EventHandler implements Runnable {
   }
 
   /**
+   * If data dependency is set, will block on all the required dataset
+   */
+  private boolean blockOnDataDependencies() {
+    if (this.isKilled()) {
+      return true;
+    }
+
+    // For pipelining of jobs. Will watch other jobs.
+    if (!dataDependencies.isEmpty()) {
+      String blockedList = "";
+      ArrayList<DataSetStatus> blockingStatus = new ArrayList<DataSetStatus>();
+
+      for (String dataSet : dataDependencies) {
+        DataSetStatus block = dataWatcher.getBlockingStatus(dataSet);
+        blockingStatus.add(block);
+        blockedList += dataSet + ",";
+      }
+
+      if (!blockingStatus.isEmpty()) {
+        logger.info("job " + this.jobId + " waiting on dataSets: " + blockedList);
+
+        for (DataSetStatus bStatus : blockingStatus) {
+          logger.info("Waiting on dataset" + bStatus.getDataSetId());
+          currentDataSetStatus = bStatus;
+          bStatus.blockOnFinishedStatus();
+          if (this.isKilled()) {
+            logger.info("Job was killed while waiting on dataset. Quiting.");
+            return true;
+          } else {
+            logger.info("Data set " + bStatus.getDataSetId() + " is now available.");
+          }
+        }
+      }
+    }
+
+    currentDataSetStatus = null;
+    return false;
+  }
+
+  /**
    * If pipelining is set, will block on another flow's jobs.
    */
   private boolean blockOnPipeLine() {
@@ -300,16 +351,16 @@ public class JobRunner extends EventHandler implements Runnable {
       ArrayList<BlockingStatus> blockingStatus =
           new ArrayList<BlockingStatus>();
       for (String waitingJobId : pipelineJobs) {
-        Status status = watcher.peekStatus(waitingJobId);
+        Status status = flowWatcher.peekStatus(waitingJobId);
         if (status != null && !Status.isStatusFinished(status)) {
-          BlockingStatus block = watcher.getBlockingStatus(waitingJobId);
+          BlockingStatus block = flowWatcher.getBlockingStatus(waitingJobId);
           blockingStatus.add(block);
           blockedList += waitingJobId + ",";
         }
       }
       if (!blockingStatus.isEmpty()) {
         logger.info("Pipeline job " + this.jobId + " waiting on " + blockedList
-            + " in execution " + watcher.getExecId());
+            + " in execution " + flowWatcher.getExecId());
 
         for (BlockingStatus bStatus : blockingStatus) {
           logger.info("Waiting on pipelined job " + bStatus.getJobId());
@@ -421,6 +472,9 @@ public class JobRunner extends EventHandler implements Runnable {
     boolean errorFound = false;
     // Delay execution if necessary. Will return a true if something went wrong.
     errorFound |= delayExecution();
+
+    // For data dependent jobs
+    errorFound |= blockOnDataDependencies();
 
     // For pipelining of jobs. Will watch other jobs. Will return true if
     // something went wrong.
@@ -642,6 +696,10 @@ public class JobRunner extends EventHandler implements Runnable {
       BlockingStatus status = currentBlockStatus;
       if (status != null) {
         status.unblock();
+      }
+
+      if(currentDataSetStatus != null) {
+        currentDataSetStatus.unblock();
       }
 
       // Cancel code here
