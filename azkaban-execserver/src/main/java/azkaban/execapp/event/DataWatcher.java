@@ -24,12 +24,15 @@ import org.apache.log4j.Logger;
 import azkaban.executor.ExecutableNode;
 import azkaban.executor.Status;
 
+/**
+ * Abstract class to implement data set watcher
+ */
 public abstract class DataWatcher {
-  private Logger logger;
+  protected Logger logger;
 
   private ExecutableNode node;
-  protected Map<String, DataSetStatus> map =
-    new ConcurrentHashMap<String, DataSetStatus>();
+  protected Map<String, DataSetBlockingStatus> dataSetMapper =
+    new ConcurrentHashMap<String, DataSetBlockingStatus>();
   private boolean cancelWatch = false;
 
   public DataWatcher(ExecutableNode node) {
@@ -44,31 +47,43 @@ public abstract class DataWatcher {
     return this.logger;
   }
 
-  public synchronized DataSetStatus getBlockingStatus(String dataSetId) {
+  /**
+   * Return DataSetBlockingStatus for a Dataset if available, otherwise create
+   * and assign a DataSetBlockingStatus and then return
+   *
+   * @param dataSetId
+   * @return
+   */
+  public synchronized DataSetBlockingStatus getBlockingStatus(String dataSetId) {
     if (cancelWatch) {
       return null;
     }
 
-    DataSetStatus blockingStatus = map.get(dataSetId);
+    logger.info(String.format("Job %s is waiting on dataset %s",
+      node.getNestedId(), dataSetId));
+    DataSetBlockingStatus blockingStatus = dataSetMapper.get(dataSetId);
     if (blockingStatus == null) {
-      blockingStatus = new DataSetStatus(dataSetId, false);
-      map.put(dataSetId, blockingStatus);
+      blockingStatus = new DataSetBlockingStatus(dataSetId, false);
+      dataSetMapper.put(dataSetId, blockingStatus);
     }
 
     return blockingStatus;
   }
 
+  /**
+   * Helper method to unblock all waiting dataset watchers
+   */
   public synchronized void unblockAllWatches() {
-    logger.info("Unblock all watches on " + node.getNestedId());
+    logger.debug("Unblocking all watches on " + node.getNestedId());
     cancelWatch = true;
 
-    for (DataSetStatus status : map.values()) {
+    for (DataSetBlockingStatus status : dataSetMapper.values()) {
       logger.info("Unblocking " + status.getDataSetId());
       status.changeStatus(true);
       status.unblock();
     }
 
-    logger.info("Successfully unblocked all watches on " + node.getNestedId());
+    logger.debug("Successfully unblocked all watches on " + node.getNestedId());
   }
 
   public boolean isWatchCancelled() {

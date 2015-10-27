@@ -33,9 +33,14 @@ public class CommonJobProperties {
   public static final String ROOT_NODE = "root.node";
 
   /**
-   * Comma delimited list of data dependencies
+   * Comma delimited list of data dependencies in local file system
    */
-  public static final String DATA_DEPENDENCIES = "dataDependencies";
+  public static final String LOCAL_DATA_DEPENDENCIES = "dependencies.data.local";
+
+  /**
+   * Comma delimited list of data dependencies in hdfs file system
+   */
+  public static final String HDFS_DATA_DEPENDENCIES = "dependencies.data.hdfs";
 
   /**
    * Comma delimited list of job names which are dependencies

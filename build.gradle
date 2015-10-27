@@ -294,8 +294,19 @@ project(':azkaban-webserver') {
 
 project(':azkaban-execserver') {
   configurations {
+   compileOnly
     all {
       transitive = false
+    }
+  }
+
+  sourceSets.all {
+     compileClasspath += configurations.compileOnly
+  }
+
+  eclipse {
+    classpath {
+      plusConfigurations += configurations.compileOnly
     }
   }
 
@@ -312,7 +323,8 @@ project(':azkaban-execserver') {
     compile('org.mortbay.jetty:jetty-util:6.1.26')
     compile('org.codehaus.jackson:jackson-core-asl:1.9.5')
     compile('org.codehaus.jackson:jackson-mapper-asl:1.9.5')
-    
+    compileOnly('org.apache.hadoop:hadoop-hdfs:2.3.0')
+    compileOnly('org.apache.hadoop:hadoop-common:2.3.0')
 
     testCompile('junit:junit:4.11')
     testCompile('org.hamcrest:hamcrest-all:1.3')

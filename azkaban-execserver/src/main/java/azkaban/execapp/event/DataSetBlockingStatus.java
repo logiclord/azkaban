@@ -16,18 +16,25 @@
 
 package azkaban.execapp.event;
 
-
-public class DataSetStatus {
+/**
+ * Class to represent dataset status
+ */
+public class DataSetBlockingStatus {
   private static final long WAIT_TIME = 5 * 60 * 1000;
   private final String dataSetId;
   private Boolean isReady;
 
-  public DataSetStatus(String dataSetId, Boolean isReady) {
+  public DataSetBlockingStatus(String dataSetId, Boolean isReady) {
     this.dataSetId = dataSetId;
     this.isReady = isReady;
   }
 
-  public Boolean blockOnFinishedStatus() {
+  /**
+   * Block current thread till we have data set ready
+   *
+   * @return
+   */
+  public Boolean blockOnReadyStatus() {
     while (!isReady) {
       synchronized (this) {
         try {
@@ -40,16 +47,20 @@ public class DataSetStatus {
     return isReady;
   }
 
-  public Boolean viewStatus() {
-    return this.isReady;
-  }
-
+  /**
+   * Unblock all threads waiting on this dataset
+   */
   public void unblock() {
     synchronized (this) {
       this.notifyAll();
     }
   }
 
+  /**
+   * Update status of this dataset
+   *
+   * @param status
+   */
   public void changeStatus(Boolean status) {
     synchronized (this) {
       this.isReady = status;
@@ -61,5 +72,9 @@ public class DataSetStatus {
 
   public String getDataSetId() {
     return dataSetId;
+  }
+
+  public Boolean viewStatus() {
+    return this.isReady;
   }
 }

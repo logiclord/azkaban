@@ -189,10 +189,10 @@ public class ProcessJob extends AbstractProcessJob {
    * This method extracts the kerberos ticket cache file name from the jobprops.
    * This method will ensure that each job execution will have its own kerberos ticket cache file
    * Given that the code only sets an environmental variable, the number of files created corresponds
-   * to the number of processes that are doing kinit in their flow, which should not be an inordinately 
+   * to the number of processes that are doing kinit in their flow, which should not be an inordinately
    * high number.
    * </pre>
-   * 
+   *
    * @return file name: the kerberos ticket cache file to use
    */
   private String getKrb5ccname(Props jobProps) {
@@ -218,7 +218,7 @@ public class ProcessJob extends AbstractProcessJob {
    * 1. USER_TO_PROXY
    * 2. SUBMIT_USER
    * </pre>
-   * 
+   *
    * @param jobProps
    * @return the user that Azkaban is going to execute as
    */

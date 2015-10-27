@@ -41,8 +41,11 @@ import azkaban.event.Event;
 import azkaban.event.Event.Type;
 import azkaban.event.EventHandler;
 import azkaban.event.EventListener;
+import azkaban.execapp.event.DataWatcher;
 import azkaban.execapp.event.FlowWatcher;
+import azkaban.execapp.event.HDFSDataWatcher;
 import azkaban.execapp.event.JobCallbackManager;
+import azkaban.execapp.event.LocalDataWatcher;
 import azkaban.execapp.jmx.JmxJobMBeanManager;
 import azkaban.execapp.metric.NumFailedJobMetric;
 import azkaban.execapp.metric.NumRunningJobMetric;
@@ -829,6 +832,14 @@ public class FlowRunner extends EventHandler implements Runnable {
     jobRunner.setDelayStart(node.getDelayedExecution());
     jobRunner.setLogSettings(logger, jobLogFileSize, jobLogNumFiles);
     jobRunner.addListener(listener);
+
+    LocalDataWatcher localDataWatcher = new LocalDataWatcher(jobRunner);
+    localDataWatcher.setLogger(logger);
+    jobRunner.setLocalDatawatcher(localDataWatcher);
+
+    HDFSDataWatcher hdfsDataWatcher = new HDFSDataWatcher(jobRunner);
+    hdfsDataWatcher.setLogger(logger);
+    jobRunner.setHDFSDatawatcher(hdfsDataWatcher);
 
     if (JobCallbackManager.isInitialized()) {
       jobRunner.addListener(JobCallbackManager.getInstance());

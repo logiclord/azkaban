@@ -36,9 +36,11 @@ import azkaban.event.Event;
 import azkaban.event.Event.Type;
 import azkaban.event.EventHandler;
 import azkaban.execapp.event.BlockingStatus;
-import azkaban.execapp.event.DataSetStatus;
+import azkaban.execapp.event.DataSetBlockingStatus;
 import azkaban.execapp.event.DataWatcher;
 import azkaban.execapp.event.FlowWatcher;
+import azkaban.execapp.event.HDFSDataWatcher;
+import azkaban.execapp.event.LocalDataWatcher;
 import azkaban.executor.ExecutableFlowBase;
 import azkaban.executor.ExecutableNode;
 import azkaban.executor.ExecutorLoader;
@@ -58,7 +60,7 @@ public class JobRunner extends EventHandler implements Runnable {
   public static final String AZKABAN_WEBSERVER_URL = "azkaban.webserver.url";
 
   private final Layout DEFAULT_LAYOUT = new EnhancedPatternLayout(
-      "%d{dd-MM-yyyy HH:mm:ss z} %c{1} %p - %m\n");
+    "%d{dd-MM-yyyy HH:mm:ss z} %c{1} %p - %m\n");
 
   private ExecutorLoader loader;
   private Props props;
@@ -85,11 +87,13 @@ public class JobRunner extends EventHandler implements Runnable {
   // Used by the job to watch and block against another flow
   private Integer pipelineLevel = null;
   private FlowWatcher flowWatcher = null;
-  private DataWatcher dataWatcher = null;
+  private LocalDataWatcher localDataWatcher = null;
+  private HDFSDataWatcher hdfsDataWatcher = null;
 
   private Set<String> pipelineJobs = new HashSet<String>();
 
-  private Set<String> dataDependencies = new HashSet<String>();
+  private Set<String> localDataDependencies = new HashSet<String>();
+  private Set<String> hdfsDataDependencies = new HashSet<String>();
 
   private Set<String> proxyUsers = null;
 
@@ -99,10 +103,10 @@ public class JobRunner extends EventHandler implements Runnable {
   private long delayStartMs = 0;
   private boolean killed = false;
   private BlockingStatus currentBlockStatus = null;
-  private DataSetStatus currentDataSetStatus = null;
+  private DataSetBlockingStatus currentDataSetStatus = null;
 
   public JobRunner(ExecutableNode node, File workingDir, ExecutorLoader loader,
-      JobTypeManager jobtypeManager) {
+    JobTypeManager jobtypeManager) {
     this.props = node.getInputProps();
     this.node = node;
     this.workingDir = workingDir;
@@ -111,8 +115,12 @@ public class JobRunner extends EventHandler implements Runnable {
     this.jobId = node.getId();
     this.loader = loader;
     this.jobtypeManager = jobtypeManager;
-    this.dataDependencies.addAll(props.getStringList(CommonJobProperties.DATA_DEPENDENCIES,
-              (List<String>) null));
+
+    this.localDataDependencies.addAll(props.getStringList(
+      CommonJobProperties.LOCAL_DATA_DEPENDENCIES, new ArrayList<String>()));
+
+    this.hdfsDataDependencies.addAll(props.getStringList(
+      CommonJobProperties.HDFS_DATA_DEPENDENCIES, new ArrayList<String>()));
   }
 
   public void setValidatedProxyUsers(Set<String> proxyUsers) {
@@ -120,7 +128,7 @@ public class JobRunner extends EventHandler implements Runnable {
   }
 
   public void setLogSettings(Logger flowLogger, String logFileChuckSize,
-      int numLogBackup) {
+    int numLogBackup) {
     this.flowLogger = flowLogger;
     this.jobLogChunkSize = logFileChuckSize;
     this.jobLogBackupIndex = numLogBackup;
@@ -128,6 +136,14 @@ public class JobRunner extends EventHandler implements Runnable {
 
   public Props getProps() {
     return props;
+  }
+
+  public void setLocalDatawatcher(LocalDataWatcher watcher) {
+    this.localDataWatcher = watcher;
+  }
+
+  public void setHDFSDatawatcher(HDFSDataWatcher watcher) {
+    this.hdfsDataWatcher = watcher;
   }
 
   public void setPipeline(FlowWatcher watcher, int pipelineLevel) {
@@ -145,7 +161,7 @@ public class JobRunner extends EventHandler implements Runnable {
           ExecutableFlowBase grandParentFlow = parentFlow.getParentFlow();
           for (String outNode : parentFlow.getOutNodes()) {
             ExecutableNode nextNode =
-                grandParentFlow.getExecutableNode(outNode);
+              grandParentFlow.getExecutableNode(outNode);
 
             // If the next node is a nested flow, then we add the nested
             // starting nodes
@@ -175,7 +191,7 @@ public class JobRunner extends EventHandler implements Runnable {
   }
 
   private void findAllStartingNodes(ExecutableFlowBase flow,
-      Set<String> pipelineJobs) {
+    Set<String> pipelineJobs) {
     for (String startingNode : flow.getStartNodes()) {
       ExecutableNode node = flow.getExecutableNode(startingNode);
       if (node instanceof ExecutableFlowBase) {
@@ -216,8 +232,7 @@ public class JobRunner extends EventHandler implements Runnable {
     // Create logger
     synchronized (logCreatorLock) {
       String loggerName =
-          System.currentTimeMillis() + "." + this.executionId + "."
-              + this.jobId;
+        System.currentTimeMillis() + "." + this.executionId + "." + this.jobId;
       logger = Logger.getLogger(loggerName);
 
       // Create file appender
@@ -229,7 +244,7 @@ public class JobRunner extends EventHandler implements Runnable {
       jobAppender = null;
       try {
         RollingFileAppender fileAppender =
-            new RollingFileAppender(loggerLayout, absolutePath, true);
+          new RollingFileAppender(loggerLayout, absolutePath, true);
         fileAppender.setMaxBackupIndex(jobLogBackupIndex);
         fileAppender.setMaxFileSize(jobLogChunkSize);
         jobAppender = fileAppender;
@@ -237,7 +252,7 @@ public class JobRunner extends EventHandler implements Runnable {
         logger.setAdditivity(false);
       } catch (IOException e) {
         flowLogger.error("Could not open log file in " + workingDir
-            + " for job " + this.jobId, e);
+          + " for job " + this.jobId, e);
       }
     }
   }
@@ -261,7 +276,7 @@ public class JobRunner extends EventHandler implements Runnable {
       loader.updateExecutableNode(node);
     } catch (ExecutorManagerException e) {
       flowLogger.error("Could not update job properties in db for "
-          + this.jobId, e);
+        + this.jobId, e);
     }
   }
 
@@ -305,32 +320,50 @@ public class JobRunner extends EventHandler implements Runnable {
       return true;
     }
 
-    // For pipelining of jobs. Will watch other jobs.
-    if (!dataDependencies.isEmpty()) {
-      String blockedList = "";
-      ArrayList<DataSetStatus> blockingStatus = new ArrayList<DataSetStatus>();
+    String blockedList = "";
+    ArrayList<DataSetBlockingStatus> blockingStatus =
+      new ArrayList<DataSetBlockingStatus>();
 
-      for (String dataSet : dataDependencies) {
-        DataSetStatus block = dataWatcher.getBlockingStatus(dataSet);
+    if (!localDataDependencies.isEmpty()) {
+      for (String dataSet : localDataDependencies) {
+        DataSetBlockingStatus block =
+          localDataWatcher.getBlockingStatus(dataSet);
         blockingStatus.add(block);
         blockedList += dataSet + ",";
       }
+    }
 
-      if (!blockingStatus.isEmpty()) {
-        logger.info("job " + this.jobId + " waiting on dataSets: " + blockedList);
+    if (!hdfsDataDependencies.isEmpty()) {
+      for (String dataSet : hdfsDataDependencies) {
+        DataSetBlockingStatus block =
+          hdfsDataWatcher.getBlockingStatus(dataSet);
+        blockingStatus.add(block);
+        blockedList += dataSet + ",";
+      }
+    }
 
-        for (DataSetStatus bStatus : blockingStatus) {
-          logger.info("Waiting on dataset" + bStatus.getDataSetId());
-          currentDataSetStatus = bStatus;
-          bStatus.blockOnFinishedStatus();
-          if (this.isKilled()) {
-            logger.info("Job was killed while waiting on dataset. Quiting.");
-            return true;
-          } else {
-            logger.info("Data set " + bStatus.getDataSetId() + " is now available.");
-          }
+    if (!blockingStatus.isEmpty()) {
+      logger.info("job " + this.jobId + " waiting on dataSets: " + blockedList);
+      for (DataSetBlockingStatus bStatus : blockingStatus) {
+        logger.info("Waiting on dataset" + bStatus.getDataSetId());
+        currentDataSetStatus = bStatus;
+        bStatus.blockOnReadyStatus();
+        if (this.isKilled()) {
+          logger.info("Job was killed while waiting on dataset. Quiting.");
+          return true;
+        } else {
+          logger.info("Data set " + bStatus.getDataSetId()
+            + " is now available.");
         }
       }
+    }
+
+    if (localDataWatcher != null) {
+      localDataWatcher.stopWatcher();
+    }
+
+    if (hdfsDataWatcher != null) {
+      hdfsDataWatcher.stopWatcher();
     }
 
     currentDataSetStatus = null;
@@ -349,7 +382,7 @@ public class JobRunner extends EventHandler implements Runnable {
     if (!pipelineJobs.isEmpty()) {
       String blockedList = "";
       ArrayList<BlockingStatus> blockingStatus =
-          new ArrayList<BlockingStatus>();
+        new ArrayList<BlockingStatus>();
       for (String waitingJobId : pipelineJobs) {
         Status status = flowWatcher.peekStatus(waitingJobId);
         if (status != null && !Status.isStatusFinished(status)) {
@@ -360,7 +393,7 @@ public class JobRunner extends EventHandler implements Runnable {
       }
       if (!blockingStatus.isEmpty()) {
         logger.info("Pipeline job " + this.jobId + " waiting on " + blockedList
-            + " in execution " + flowWatcher.getExecId());
+          + " in execution " + flowWatcher.getExecId());
 
         for (BlockingStatus bStatus : blockingStatus) {
           logger.info("Waiting on pipelined job " + bStatus.getJobId());
@@ -388,16 +421,16 @@ public class JobRunner extends EventHandler implements Runnable {
     long currentTime = System.currentTimeMillis();
     if (delayStartMs > 0) {
       logger.info("Delaying start of execution for " + delayStartMs
-          + " milliseconds.");
+        + " milliseconds.");
       synchronized (this) {
         try {
           this.wait(delayStartMs);
           logger.info("Execution has been delayed for " + delayStartMs
-              + " ms. Continuing with execution.");
+            + " ms. Continuing with execution.");
         } catch (InterruptedException e) {
           logger.error("Job " + this.jobId + " was to be delayed for "
-              + delayStartMs + ". Interrupted after "
-              + (System.currentTimeMillis() - currentTime));
+            + delayStartMs + ". Interrupted after "
+            + (System.currentTimeMillis() - currentTime));
         }
       }
 
@@ -427,10 +460,10 @@ public class JobRunner extends EventHandler implements Runnable {
       Arrays.sort(files, Collections.reverseOrder());
 
       loader.uploadLogFile(executionId, this.node.getNestedId(), attemptNo,
-          files);
+        files);
     } catch (ExecutorManagerException e) {
       flowLogger.error(
-          "Error writing out logs for job " + this.node.getNestedId(), e);
+        "Error writing out logs for job " + this.node.getNestedId(), e);
     }
   }
 
@@ -444,13 +477,13 @@ public class JobRunner extends EventHandler implements Runnable {
       File file = new File(attachmentFileName);
       if (!file.exists()) {
         flowLogger.info("No attachment file for job " + this.jobId
-            + " written.");
+          + " written.");
         return;
       }
       loader.uploadAttachmentFile(node, file);
     } catch (ExecutorManagerException e) {
       flowLogger.error(
-          "Error writing out attachment for job " + this.node.getNestedId(), e);
+        "Error writing out attachment for job " + this.node.getNestedId(), e);
     }
   }
 
@@ -460,7 +493,7 @@ public class JobRunner extends EventHandler implements Runnable {
   @Override
   public void run() {
     Thread.currentThread().setName(
-        "JobRunner-" + this.jobId + "-" + executionId);
+      "JobRunner-" + this.jobId + "-" + executionId);
 
     // If the job is cancelled, disabled, killed. No log is created in this case
     if (handleNonReadyStatus()) {
@@ -513,7 +546,7 @@ public class JobRunner extends EventHandler implements Runnable {
 
     int attemptNo = node.getAttempt();
     logInfo("Finishing job " + this.jobId + " attempt: " + attemptNo + " at "
-        + node.getEndTime() + " with status " + node.getStatus());
+      + node.getEndTime() + " with status " + node.getStatus());
 
     fireEvent(Event.create(this, Type.JOB_FINISHED), false);
     finalizeLogFile(attemptNo);
@@ -535,7 +568,7 @@ public class JobRunner extends EventHandler implements Runnable {
 
       if (node.getAttempt() > 0) {
         logInfo("Starting job " + this.jobId + " attempt " + node.getAttempt()
-            + " at " + node.getStartTime());
+          + " at " + node.getStartTime());
       } else {
         logInfo("Starting job " + this.jobId + " at " + node.getStartTime());
       }
@@ -552,7 +585,7 @@ public class JobRunner extends EventHandler implements Runnable {
 
       props.put(CommonJobProperties.JOB_ATTEMPT, node.getAttempt());
       props.put(CommonJobProperties.JOB_METADATA_FILE,
-          createMetaDataFileName(node));
+        createMetaDataFileName(node));
       props.put(CommonJobProperties.JOB_ATTACHMENT_FILE, attachmentFileName);
       changeStatus(Status.RUNNING);
 
@@ -565,7 +598,7 @@ public class JobRunner extends EventHandler implements Runnable {
         String jobProxyUser = props.getString("user.to.proxy");
         if (proxyUsers != null && !proxyUsers.contains(jobProxyUser)) {
           logger.error("User " + jobProxyUser
-              + " has no permission to execute this job " + this.jobId + "!");
+            + " has no permission to execute this job " + this.jobId + "!");
           return false;
         }
       }
@@ -590,9 +623,9 @@ public class JobRunner extends EventHandler implements Runnable {
     String jobId = node.getId();
 
     String jobJVMArgs =
-        String.format(
-            "-Dazkaban.flowid=%s -Dazkaban.execid=%s -Dazkaban.jobid=%s",
-            flowName, executionId, jobId);
+      String.format(
+        "-Dazkaban.flowid=%s -Dazkaban.execid=%s -Dazkaban.jobid=%s", flowName,
+        executionId, jobId);
 
     String previousJVMArgs = props.get(JavaProcessJob.JVM_PARAMS);
     jobJVMArgs += (previousJVMArgs == null) ? "" : " " + previousJVMArgs;
@@ -614,17 +647,17 @@ public class JobRunner extends EventHandler implements Runnable {
 
       props.put(CommonJobProperties.AZKABAN_URL, baseURL);
       props.put(CommonJobProperties.EXECUTION_LINK,
-          String.format("%s/executor?execid=%d", baseURL, executionId));
+        String.format("%s/executor?execid=%d", baseURL, executionId));
       props.put(CommonJobProperties.JOBEXEC_LINK, String.format(
-          "%s/executor?execid=%d&job=%s", baseURL, executionId, jobId));
+        "%s/executor?execid=%d&job=%s", baseURL, executionId, jobId));
       props.put(CommonJobProperties.ATTEMPT_LINK, String.format(
-          "%s/executor?execid=%d&job=%s&attempt=%d", baseURL, executionId,
-          jobId, node.getAttempt()));
+        "%s/executor?execid=%d&job=%s&attempt=%d", baseURL, executionId, jobId,
+        node.getAttempt()));
       props.put(CommonJobProperties.WORKFLOW_LINK, String.format(
-          "%s/manager?project=%s&flow=%s", baseURL, projectName, flowName));
+        "%s/manager?project=%s&flow=%s", baseURL, projectName, flowName));
       props.put(CommonJobProperties.JOB_LINK, String.format(
-          "%s/manager?project=%s&flow=%s&job=%s", baseURL, projectName,
-          flowName, jobId));
+        "%s/manager?project=%s&flow=%s&job=%s", baseURL, projectName, flowName,
+        jobId));
     } else {
       if (logger != null) {
         logger.info(AZKABAN_WEBSERVER_URL + " property was not set");
@@ -632,11 +665,11 @@ public class JobRunner extends EventHandler implements Runnable {
     }
     // out nodes
     props.put(CommonJobProperties.OUT_NODES,
-        StringUtils.join2(node.getOutNodes(), ","));
+      StringUtils.join2(node.getOutNodes(), ","));
 
     // in nodes
     props.put(CommonJobProperties.IN_NODES,
-        StringUtils.join2(node.getInNodes(), ","));
+      StringUtils.join2(node.getInNodes(), ","));
   }
 
   private void runJob() {
@@ -693,12 +726,20 @@ public class JobRunner extends EventHandler implements Runnable {
       logError("Kill has been called.");
       this.killed = true;
 
+      if (localDataWatcher != null) {
+        localDataWatcher.stopWatcher();
+      }
+
+      if (hdfsDataWatcher != null) {
+        hdfsDataWatcher.stopWatcher();
+      }
+
       BlockingStatus status = currentBlockStatus;
       if (status != null) {
         status.unblock();
       }
 
-      if(currentDataSetStatus != null) {
+      if (currentDataSetStatus != null) {
         currentDataSetStatus.unblock();
       }
 
@@ -765,7 +806,7 @@ public class JobRunner extends EventHandler implements Runnable {
       jobId = node.getPrintableId("._.");
     }
     return attempt > 0 ? "_job." + executionId + "." + attempt + "." + jobId
-        + ".log" : "_job." + executionId + "." + jobId + ".log";
+      + ".log" : "_job." + executionId + "." + jobId + ".log";
   }
 
   public static String createLogFileName(ExecutableNode node) {
@@ -781,7 +822,7 @@ public class JobRunner extends EventHandler implements Runnable {
     }
 
     return attempt > 0 ? "_job." + executionId + "." + attempt + "." + jobId
-        + ".meta" : "_job." + executionId + "." + jobId + ".meta";
+      + ".meta" : "_job." + executionId + "." + jobId + ".meta";
   }
 
   public static String createMetaDataFileName(ExecutableNode node) {
@@ -802,6 +843,6 @@ public class JobRunner extends EventHandler implements Runnable {
     }
 
     return attempt > 0 ? "_job." + executionId + "." + attempt + "." + jobId
-        + ".attach" : "_job." + executionId + "." + jobId + ".attach";
+      + ".attach" : "_job." + executionId + "." + jobId + ".attach";
   }
 }
